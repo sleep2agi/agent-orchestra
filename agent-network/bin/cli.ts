@@ -3662,7 +3662,7 @@ function checkRuntimeDependency(runtime: RuntimeName, phase: "create" | "start")
   // warning during the create wizard misleads first-time users into thinking
   // setup is broken. Suppress for first-time scenarios and only emit a
   // neutral nudge when start phase actually runs without it cached.
-  if (phase === "start" && !commandExists("agent-node")) {
+  if (phase === "start" && !commandExists("agent-node") && !findSiblingAgentNode()) { // #1832 更正:旁边有就不说 npx
     console.log(`[anet] note: agent-node will be lazy-fetched via npx on first start (this is normal).`);
   }
   if ((runtime === "grok-build-acp" || runtime === "grok-build-cli") && !commandExists("grok")) {

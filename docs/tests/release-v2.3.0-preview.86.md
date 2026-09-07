@@ -1,16 +1,22 @@
 # `@sleep2agi/agent-network@2.3.0-preview.86`
 
-## 为什么发这一版:#1832 sibling-first 在 npm -g / --prefix 布局下终于命中(#1834)
+## 为什么发这一版:#1832 realpath 兜底(#1834)—— 🔴 附更正
 
-`.85` 的 `findSiblingAgentNode` 用 `resolve(process.argv[1])` = `<prefix>/bin/anet`(npm 建的符号链接),
-从 `<prefix>/bin` 往上找不到 `node_modules`,同一 prefix 里装好的 agent-node **永远命不中**,退到 PATH 上另一棵树的
-老版本。Vincent 2026-09-07 的 Mac 就是这样(nvm v20 的旧 agent-node)让本机 daemon 以普通节点身份注册、进不了
-host_supervisor 列表(app#271)。本版入口先 `realpath`(失败退回原路径、不抛),旁边的 agent-node 才是第一优先。
+**更正(2026-09-07 10:25,DEV 真跑 .85/.86 同布局对照):** #1832 的前提不成立。`npm i -g --prefix $P` 布局下
+`dist/bin/anet.cjs` 垫片在 import cli.js 之前就把 `process.argv[1]` 改写成真实的 `dist/bin/cli.js`,所以 `.85` 的
+sibling-first **本来就命中**——两个版本起节点都打「using the agent-node installed beside anet (2.5.0-preview.66)」。
+当时误判的依据是 `anet daemon start` 打的「[anet] note: agent-node will be lazy-fetched via npx on first start」,
+那句来自 `cli.ts` 只看 PATH 的 `commandExists("agent-node")` 分支,和真正的启动决策无关(下一版起,旁边有 agent-node 时
+不再打这句)。
+
+本版的 realpath 改动是无害兜底:argv[1] 已是真路径时是 no-op;只对「把 cli.js 直接符号链接到别处」这类非 npm 布局有意义。
+Vincent Mac 上 daemon 用旧 agent-node 的根因不变:desktop-v0.2.54 的私有 prefix **没装** agent-node(sibling 为空)→ PATH 上
+nvm v20 的旧版;desktop-v0.2.55 起私有 prefix 同时装 agent-node。
 
 | 用户看到的 | `.85` | `.86` |
 |---|---|---|
-| `npm i -g --prefix $P @sleep2agi/agent-network @sleep2agi/agent-node` 后 `anet daemon start` / `node start` | 日志「agent-node will be lazy-fetched via npx」或用 PATH 上的旧版 | 日志「using the agent-node installed beside anet (…)」 |
-| 全局散装(旁边没有 agent-node) | PATH → npx | 不变:PATH → npx |
+| `npm i -g --prefix $P …` 后 `anet node start`(PATH 无 agent-node) | 「using the agent-node installed beside anet」(**已命中**) | 相同 |
+| `anet daemon start` 的「lazy-fetched via npx」note | 旁边有 agent-node 也打(误导) | 相同(修复在下一版) |
 | 配对 agent-node(`anet node create` 装的) | `2.5.0-preview.66` | `2.5.0-preview.66`(不变) |
 
 ## Install
@@ -25,11 +31,13 @@ npm i -g @sleep2agi/agent-network@2.3.0-preview.86
 npm i -g @sleep2agi/agent-network@2.3.0-preview.86
 ```
 
-## 验证(发布后在 DEV 真跑)
+## 验证(2026-09-07 10:23 DEV 已真跑)
 
 ```bash
+# .85 与 .86 各装一个 --prefix,HOME 指临时目录、hub 指 127.0.0.1:1(不碰生产)、PATH 只留 node
 P=$(mktemp -d); npm i -g --prefix "$P" @sleep2agi/agent-network@2.3.0-preview.86 @sleep2agi/agent-node@2.5.0-preview.66
-PATH=$(dirname "$(command -v node)"):/usr/bin:/bin "$P/bin/anet" node start <某个 claude-agent-sdk 节点> 2>&1 | grep -F 'beside anet'
+PATH=$(dirname "$(command -v node)"):/usr/bin:/bin "$P/bin/anet" node start <claude-agent-sdk 节点> 2>&1 | grep -F 'beside anet'
+# 结果:.85 与 .86 都输出「using the agent-node installed beside anet (2.5.0-preview.66)」
 ```
 
 ## 边界
