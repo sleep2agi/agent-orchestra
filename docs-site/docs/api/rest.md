@@ -1220,9 +1220,13 @@ curl "http://localhost:9200/api/messages?scope=user&unacked=1&limit=50" \
     }
   ],
   "unread": 3,
-  "pending_count": 3
+  "pending_count": 3,
+  "unread_by_agent": { "代码1号": 2, "通信龙": 3 },
+  "unread_total": 5
 }
 ```
+
+**`unread_by_agent` / `unread_total`(#1828)**:按 `from_session` 分的未读数,来源是**两张表**——`user_inbox`(agent 主动发给用户的,acked=0)加 `inbox` 里 `session_name = 你的用户名`、`type ∈ reply/task/message`、acked=0 的行(agent 对你任务的回复;这些行原本没人 ack)。`unread_total` 是两者之和。客户端角标应优先读 `unread_by_agent`。🔴 你的用户名恰好也是本 scope 内某个节点的 alias 时,`inbox` 那半边**整体不算**(那些行是节点的待办,不是你的)。
 
 🔴 **`unread` 与 `pending_count` 恒等** —— 是**同一个数的两个名字**（`unread` 给角标读，`pending_count` 与上面 alias 分支的字段名保持一致），**一处计算**，不是两处实现。**不要拿它们互相比对**去判断状态。
 
@@ -1263,7 +1267,7 @@ curl -X POST "http://localhost:9200/api/messages/ack" \
 
 **请求体**：`{"message_id": "dm_x"}` 或 `{"message_ids": ["dm_x", "dm_y"]}`（二选一，后者**上限 500 条**）。
 
-**响应**：`{"ok": true, "acked": 2}` —— `acked` 是**实际改动的行数**，不是你传了几个 id。已经 ack 过的、不属于你的、不存在的，都不计入。
+**响应**：`{"ok": true, "acked": 2, "acked_user_inbox": 1, "acked_inbox": 1}` —— `acked` 是**实际改动的行数**（两张表之和；#1828 起同一批 id 也会 ack `inbox` 里发给你用户名的 `reply/task/message` 行，即 agent 对你任务的回复；用户名与节点 alias 撞名时 `inbox` 半边跳过），不是你传了几个 id。已经 ack 过的、不属于你的、不存在的，都不计入。
 
 **错误**：
 

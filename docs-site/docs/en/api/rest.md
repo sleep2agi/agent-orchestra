@@ -1171,9 +1171,13 @@ curl "http://localhost:9200/api/messages?scope=user&unacked=1&limit=50" \
     }
   ],
   "unread": 3,
-  "pending_count": 3
+  "pending_count": 3,
+  "unread_by_agent": { "代码1号": 2, "通信龙": 3 },
+  "unread_total": 5
 }
 ```
+
+**`unread_by_agent` / `unread_total`** (#1828): unread counts keyed by `from_session`, drawn from **two tables** — `user_inbox` (agent-initiated messages to you, acked=0) plus the `inbox` rows with `session_name = your username`, `type ∈ reply/task/message`, acked=0 (agent replies to your tasks; nobody used to ack those). `unread_total` is their sum. Badge clients should prefer `unread_by_agent`. 🔴 If your username happens to also be a node alias inside this scope, the `inbox` half is **skipped entirely** (those rows are that node's work queue, not yours).
 
 🔴 **`unread` and `pending_count` are always equal** — they are **two names for one number** (`unread` reads naturally for a badge; `pending_count` matches the field name used by the alias branch above). It is computed **once**, not twice. **Do not compare them against each other** to infer state.
 
@@ -1214,7 +1218,7 @@ curl -X POST "http://localhost:9200/api/messages/ack" \
 
 **Body**: either `{"message_id": "dm_x"}` or `{"message_ids": ["dm_x", "dm_y"]}` (the latter **capped at 500**).
 
-**Response**: `{"ok": true, "acked": 2}` — `acked` is the number of rows **actually changed**, not how many ids you sent. Rows already acked, not yours, or nonexistent do not count.
+**Response**: `{"ok": true, "acked": 2, "acked_user_inbox": 1, "acked_inbox": 1}` — `acked` is the number of rows **actually changed** (sum over both tables; since #1828 the same ids also ack `inbox` rows addressed to your username with `type ∈ reply/task/message`, i.e. agent replies to your tasks; the `inbox` half is skipped when your username collides with a node alias), not how many ids you sent. Rows already acked, not yours, or nonexistent do not count.
 
 **Errors**:
 
