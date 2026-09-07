@@ -22,6 +22,18 @@ export interface SiblingAgentNode {
 export interface SiblingFs {
   exists(path: string): boolean;
   readJson(path: string): unknown;
+  /**
+   * #1832 —— npm -g / --prefix 布局下 process.argv[1] 是 `<prefix>/bin/anet` 符号链接,真实文件在
+   * `<prefix>/lib/node_modules/@sleep2agi/agent-network/…`;不解析就从 `<prefix>/bin` 往上找不到
+   * node_modules,旁边的 agent-node 永远命不中。可选:不提供或抛错时按传入路径原样找。
+   */
+  realpath?(path: string): string;
+}
+
+/** 入口路径先走 realpath(符号链接 → 真实文件);失败(不存在 / 无权限)退回原路径。 */
+export function resolveCliEntry(cliEntry: string, fs: SiblingFs): string {
+  if (!cliEntry || !fs.realpath) return cliEntry;
+  try { return fs.realpath(cliEntry); } catch { return cliEntry; }
 }
 
 /** 从 anet 入口文件路径往上,返回最近的 `…/node_modules` 目录;找不到返回 null。 */
@@ -50,7 +62,7 @@ export function binEntryFromPackageJson(pkg: unknown): string | null {
 }
 
 export function siblingAgentNodeEntrypoint(cliEntry: string, fs: SiblingFs): SiblingAgentNode | null {
-  const nm = nearestNodeModules(cliEntry);
+  const nm = nearestNodeModules(resolveCliEntry(cliEntry, fs));
   if (!nm) return null;
   const packageDir = join(nm, "@sleep2agi", "agent-node");
   const pkgJsonPath = join(packageDir, "package.json");
