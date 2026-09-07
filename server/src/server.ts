@@ -2637,6 +2637,15 @@ return Bun.serve({
       }
     }
 
+    // #1828 —— 用户名与某个节点 alias 撞名时,inbox 里 session_name=用户名 的行属于那个节点,
+    //    不能当成用户的未读、也不能替它 ack。只看当前 REST scope 内的节点。
+    const userInboxAliasCollides = (username: string, scope: RestNetworkScope): boolean => {
+      const p: any[] = [username];
+      let q = "SELECT 1 AS hit FROM nodes WHERE alias = ?1";
+      q = addNetworkScope(q, p, scope);
+      return !!db.get<{ hit: number }>(q + " LIMIT 1", ...p);
+    };
+
     // ── REST: per-user desktop inbox (#1459 ① P3) ──
     // 🔴 只在 ?scope=user 时走这条；下面按 alias 寻址的既有分支一行未动
     //    （dashboard 依赖那条 inbox 查询）。
@@ -2667,6 +2676,27 @@ return Bun.serve({
       countSql = addNetworkScope(countSql, countParams, restScope);
       const unread = db.get<{ cnt: number }>(countSql, ...countParams)?.cnt ?? 0;
 
+      // #1828 —— 按 agent 分的未读:user_inbox(agent 主动发给用户)+ inbox 里发给**这个用户名**的
+      //    reply/task/message 行(agent 对用户任务的回复;acked 从来没人置 1,见 app#260)。
+      //    `unread`/`pending_count` 口径不动(只算 user_inbox,qa-hub-14 钉着);两表之和另给 `unread_total`。
+      //    🔴 用户名恰好也是某个节点 alias 时,inbox 里那些行是节点的待办,不是用户的 —— 跳过 inbox 半边。
+      const byAgent: Record<string, number> = {};
+      const addByAgent = (agentRows: Array<{ agent: string | null; n: number }>) => {
+        for (const r of agentRows) byAgent[r.agent || "hub"] = (byAgent[r.agent || "hub"] ?? 0) + Number(r.n ?? 0);
+      };
+      const uiAgentParams: any[] = [callerUserId];
+      let uiAgentSql = "SELECT from_session AS agent, COUNT(*) AS n FROM user_inbox WHERE user_id = ?1 AND acked = 0";
+      uiAgentSql = addNetworkScope(uiAgentSql, uiAgentParams, restScope);
+      addByAgent(db.all<{ agent: string | null; n: number }>(uiAgentSql + " GROUP BY from_session", ...uiAgentParams));
+      const callerUsername = restAuth?.username ?? "";
+      if (callerUsername && !userInboxAliasCollides(callerUsername, restScope)) {
+        const ibParams: any[] = [callerUsername];
+        let ibSql = "SELECT from_session AS agent, COUNT(*) AS n FROM inbox WHERE session_name = ?1 AND acked = 0 AND type IN ('reply', 'task', 'message')";
+        ibSql = addNetworkScope(ibSql, ibParams, restScope);
+        addByAgent(db.all<{ agent: string | null; n: number }>(ibSql + " GROUP BY from_session", ...ibParams));
+      }
+      const unreadTotal = Object.values(byAgent).reduce((a, b) => a + b, 0);
+
       // 🔴 redact-at-read：写入方是 agent，不受信任。存储侧已做跨主机路径脱敏，
       //    这一层单独防"有人把凭据塞进正文/标题/meta"。
       const messages = rows.map(redactMessageRow);
@@ -2678,6 +2708,8 @@ return Bun.serve({
         // 同一个数的两个名字：`unread` 给角标读，`pending_count` 与 alias 分支
         // 的字段名保持一致。**一处计算**，不是两处实现。
         pending_count: unread,
+        unread_by_agent: byAgent,
+        unread_total: unreadTotal,
       }));
     }
 
@@ -2733,7 +2765,19 @@ return Bun.serve({
                  WHERE user_id = ?1 AND message_id IN (${placeholders}) AND acked = 0`;
       sql = addNetworkScope(sql, params, restScope);
       const res = db.run(sql, params);
-      return withCors(req, Response.json({ ok: true, acked: res.changes ?? 0 }));
+      // #1828 —— 同一批 id 也可能是 inbox 里发给这个用户名的 reply/task/message 行(agent 回复);
+      //    用户看过就 ack 掉。只动 session_name = 调用者用户名 的行,别人的 id 匹配不到;
+      //    用户名与节点 alias 撞名时跳过(那是节点的待办)。
+      let inboxAcked = 0;
+      const callerUsername = restAuth?.username ?? "";
+      if (callerUsername && !userInboxAliasCollides(callerUsername, restScope)) {
+        const ibParams: any[] = [callerUsername, ...ids];
+        let ibSql = `UPDATE inbox SET acked = 1
+                     WHERE session_name = ?1 AND id IN (${placeholders}) AND acked = 0 AND type IN ('reply', 'task', 'message')`;
+        ibSql = addNetworkScope(ibSql, ibParams, restScope);
+        inboxAcked = db.run(ibSql, ibParams).changes ?? 0;
+      }
+      return withCors(req, Response.json({ ok: true, acked: (res.changes ?? 0) + inboxAcked, acked_user_inbox: res.changes ?? 0, acked_inbox: inboxAcked }));
     }
 
     // ── REST: stats summary ──
