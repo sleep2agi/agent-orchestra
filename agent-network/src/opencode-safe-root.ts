@@ -117,12 +117,44 @@ function ensureRootRuntimeDirectory(path: string, parent: string): void {
   mkdirSync(path, { mode: 0o700 });
 }
 
-export function resolveOpencodeTrustedRuntimeBase(explicit?: string): PathIdentity {
-  if (process.platform !== "linux" || process.getuid === undefined) {
-    throw new Error("OpenCode safe launch isolation currently requires Linux uid/procfs semantics");
+/** #1845 层② —— 运行时隔离 base 的平台策略。规则(祖先不可符号链接、非 root 只能是本 uid、无 0o022 写位、
+ * base 本身 uid-owned 0700)三平台一样;不同的只有**默认 base 在哪**:
+ *   linux  → /run/user/<uid>(systemd 的每用户 0700 运行目录;缺失时仅 root 可建)
+ *   darwin → realpath($TMPDIR)(macOS 每用户 0700 的 /private/var/folders/xx/<hash>/T;2026-09-07 Mac mini 量过
+ *            全链:T 700 uid、<hash> 755 uid、其余 755 root,满足同一套祖先规则)
+ *   其它   → 拦(win32 没有 uid 语义)
+ * 显式 base(参数或 ANET_OPENCODE_SAFE_BASE)三平台通用。platform / env 可注入,便于在 Linux CI 上测 darwin 分支。 */
+export const OPENCODE_SAFE_ROOT_PLATFORMS: ReadonlySet<NodeJS.Platform> = new Set(["linux", "darwin"]);
+
+export function defaultOpencodeRuntimeBase(
+  uid: number,
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
+): string {
+  if (platform === "darwin") {
+    const tmp = env.TMPDIR;
+    if (!tmp || !isAbsolute(tmp) || tmp.includes("\0")) {
+      throw new Error("OpenCode on macOS needs an absolute per-user TMPDIR, or set ANET_OPENCODE_SAFE_BASE");
+    }
+    // 去掉尾部的 /;真实路径在下面统一 realpath,这里只做「请求路径」。
+    return resolve(tmp);
+  }
+  if (!lstatIfPresent("/run/user")) ensureRootRuntimeDirectory("/run/user", "/run");
+  const requested = `/run/user/${uid}`;
+  if (!lstatIfPresent(requested)) ensureRootRuntimeDirectory(requested, "/run/user");
+  return requested;
+}
+
+export function resolveOpencodeTrustedRuntimeBase(
+  explicit?: string,
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): PathIdentity {
+  if (!OPENCODE_SAFE_ROOT_PLATFORMS.has(platform) || process.getuid === undefined) {
+    throw new Error(`OpenCode safe launch isolation currently requires Linux or macOS uid semantics (got ${platform})`);
   }
   const uid = process.getuid();
-  const configured = explicit ?? process.env.ANET_OPENCODE_SAFE_BASE;
+  const configured = explicit ?? env.ANET_OPENCODE_SAFE_BASE;
   let requested: string;
   if (configured !== undefined) {
     if (!isAbsolute(configured) || configured.includes("\0")) {
@@ -130,12 +162,15 @@ export function resolveOpencodeTrustedRuntimeBase(explicit?: string): PathIdenti
     }
     requested = resolve(configured);
   } else {
-    if (!lstatIfPresent("/run/user")) ensureRootRuntimeDirectory("/run/user", "/run");
-    requested = `/run/user/${uid}`;
-    if (!lstatIfPresent(requested)) ensureRootRuntimeDirectory(requested, "/run/user");
+    requested = defaultOpencodeRuntimeBase(uid, platform, env);
   }
+  // macOS 的 $TMPDIR 是 /var/folders/…(/var → /private/var 符号链接),显式 base 也可能写成带链接的路径;
+  // 「请求路径」允许经符号链接到达,但 canonical 之后的每一级祖先仍然逐级校验不可为符号链接。
+  // Linux 的 /run/user/<uid> 与显式 base 的原语义(必须 canonical)保留:只有 darwin 默认 base 走 realpath 归一。
   const canonical = realpathSync(requested);
-  if (canonical !== requested) throw new Error("OpenCode refuses a symlinked safe runtime base");
+  if (canonical !== requested && !(platform === "darwin" && configured === undefined)) {
+    throw new Error("OpenCode refuses a symlinked safe runtime base");
+  }
 
   let current = canonical;
   let baseStat: ReturnType<typeof lstatSync> | undefined;
