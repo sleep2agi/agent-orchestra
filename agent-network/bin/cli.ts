@@ -3162,8 +3162,8 @@ let grokAgentNodeLaunchPlan: AgentNodeLaunchPlan | null = null;
 // 返回 null 表示没有(全局散装、或 anet 以源码方式运行),调用方按原逻辑走 PATH / npx。
 function findSiblingAgentNode(): ReturnType<typeof siblingAgentNodeEntrypoint> {
   const entry = process.argv[1] ? resolve(process.argv[1]) : "";
-  return siblingAgentNodeEntrypoint(entry, {
-    exists: (path) => existsSync(path),
+  return siblingAgentNodeEntrypoint(entry, { // #1832 realpath:npm -g 的 bin/anet 是符号链接
+    exists: (path) => existsSync(path), realpath: (path) => realpathSync(path),
     readJson: (path) => JSON.parse(readFileSync(path, "utf8")),
   });
 }

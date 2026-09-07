@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join, sep } from "node:path";
-import { binEntryFromPackageJson, nearestNodeModules, siblingAgentNodeEntrypoint, type SiblingFs } from "./sibling-agent-node";
+import { binEntryFromPackageJson, nearestNodeModules, resolveCliEntry, siblingAgentNodeEntrypoint, type SiblingFs } from "./sibling-agent-node";
 
 function fakeFs(files: Record<string, unknown>): SiblingFs {
   return {
@@ -59,5 +59,35 @@ describe("#1808 sibling agent-node", () => {
   test("unreadable package.json → null, never throws", () => {
     const fs: SiblingFs = { exists: () => true, readJson: () => { throw new Error("EACCES"); } };
     expect(siblingAgentNodeEntrypoint(CLI, fs)).toBeNull();
+  });
+
+  // #1832 —— npm -g / --prefix 布局:argv[1] 是 <prefix>/bin/anet 符号链接,真实入口在 lib/node_modules 下。
+  describe("#1832 symlinked bin entry (npm -g / --prefix layout)", () => {
+    const PREFIX = sep === "/" ? "/opt/p" : "C:\\opt\\p";
+    const LINK = join(PREFIX, "bin", "anet");
+    const LIB_NM = join(PREFIX, "lib", "node_modules");
+    const REAL = join(LIB_NM, "@sleep2agi", "agent-network", "dist", "bin", "anet.cjs");
+    const PKG = join(LIB_NM, "@sleep2agi", "agent-node", "package.json");
+    const BIN = join(LIB_NM, "@sleep2agi", "agent-node", "dist", "cli.js");
+    const files = { [PKG]: { version: "2.5.0-preview.66", bin: { "agent-node": "dist/cli.js" } }, [BIN]: "" };
+
+    test("without realpath the symlink layout misses (the #1832 defect shape)", () => {
+      expect(siblingAgentNodeEntrypoint(LINK, fakeFs(files))).toBeNull();
+    });
+
+    test("with realpath the sibling beside the real entry is found", () => {
+      const fs: SiblingFs = { ...fakeFs(files), realpath: (p) => (p === LINK ? REAL : p) };
+      const hit = siblingAgentNodeEntrypoint(LINK, fs);
+      expect(hit).not.toBeNull();
+      expect(hit!.entrypoint).toBe(BIN);
+      expect(hit!.version).toBe("2.5.0-preview.66");
+    });
+
+    test("realpath that throws (dangling link / EACCES) falls back to the given path, never throws", () => {
+      const fs: SiblingFs = { ...fakeFs(files), realpath: () => { throw new Error("ENOENT"); } };
+      expect(resolveCliEntry(LINK, fs)).toBe(LINK);
+      expect(siblingAgentNodeEntrypoint(LINK, fs)).toBeNull();
+      expect(resolveCliEntry("", fs)).toBe("");
+    });
   });
 });
