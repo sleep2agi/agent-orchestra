@@ -3120,6 +3120,31 @@ return Bun.serve({
     // Mirror of the `list_host_supervisors` MCP tool for non-MCP callers.
     // Same SQL + role-extract + member-脱敏 logic; SEC-1 scoped via REST
     // auth pipeline (restScope). Returns {ok, daemons:[...], count}.
+    // ── REST: one node_create_request's outcome (app#… 桌面向导) ──
+    // 向导 POST create_node 后只会轮询「子节点注册了没」,daemon 回的失败原因(ack_create_request 写进
+    // node_create_requests.status/error)此前没有任何读接口 —— 用户只看到「24s 没注册」。
+    // 这里按 request_id 读一行;网络作用域与其它 REST 相同(addNetworkScope),无用户上下文 401。
+    if (url.pathname === "/api/node-create-requests" && req.method === "GET") {
+      if (!restAuth) {
+        return withCors(req, Response.json({ ok: false, error: "auth_required" }, { status: 401 }));
+      }
+      const requestId = url.searchParams.get("request_id")?.trim() ?? "";
+      if (!requestId) {
+        return withCors(req, Response.json({ ok: false, error: "request_id_required" }, { status: 400 }));
+      }
+      const params: any[] = [requestId];
+      let sql = `SELECT request_id, daemon_node_id, child_name, network_id, runtime, model, status, error,
+                        created_at, delivered_at, acked_at
+                 FROM node_create_requests WHERE request_id = ?1`;
+      sql = addNetworkScope(sql, params, restScope);
+      const row = db.get<Record<string, unknown>>(sql, ...params);
+      if (!row) {
+        // 不存在与不在你作用域内长一样:不泄漏别的网络里有没有这个 id。
+        return withCors(req, Response.json({ ok: false, error: "request_not_found" }, { status: 404 }));
+      }
+      return withCors(req, Response.json({ ok: true, request: row }));
+    }
+
     if (url.pathname === "/api/host-supervisors") {
       // #380 — utok callers with exactly one accessible network get a
       // safe fallback so the create-node wizard doesn't have to bake
