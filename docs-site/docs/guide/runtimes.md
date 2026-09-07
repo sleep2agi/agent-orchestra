@@ -41,6 +41,12 @@ Grok TUI 共存的当前状态见 [Grok TUI 状态页](/guide/grok-copresence)�
 
 > ⚠️ **`opencode-cli` 仅 preview 渠道**（RFC-029 迭代中）：npm **latest 尚未包含**——装 latest 后 `anet node create` 选单只有正式版的那几个 runtime（`claude-code-cli` / `claude-agent-sdk` / `codex-sdk` / `grok-build-acp`）。稳定后再进 latest。
 
+> 🖥️ **平台与模型(2026-09-07 实测):** `opencode-cli` 共存在 **Linux 与 macOS** 上可用 —— macOS 需要
+> agent-network ≥ `2.3.0-preview.87` 且 agent-node ≥ `2.5.0-preview.67`(#1845:包身份校验、`$TMPDIR` 启动隔离、
+> `ps`/`lsof` 进程归属三层等价物;Mac mini 端到端:注册 → 收任务 → 回复 → 停机),Windows 不支持。
+> 它**必须带显式模型**(`--model <provider/model>`,如 OpenCode 自带的免费模型 `opencode/mimo-v2.5-free`,不需要 key);
+> 不带模型会在启动时报 `OpenCode copresence requires an explicit provider/model`。桌面向导自 0.2.61 起默认给它。
+
 > 🔴 **默认它跑不了 `bash`,这不是坏了,是设计。** `opencode-cli` 的安全默认把**全部本机工具**
 > 关掉 —— `bash` / `read` / `glob` / `grep` / `edit` / `write` / `list` / `task` / `skill`,外加
 > `question`(无人值守下它会永远等一个交互回答)。所以派给它「跑一条命令」这类任务时,
