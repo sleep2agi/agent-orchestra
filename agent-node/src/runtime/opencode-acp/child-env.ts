@@ -1,3 +1,4 @@
+import { execFileSync } from "child_process";
 import { randomBytes } from "crypto";
 import {
   closeSync,
@@ -382,16 +383,38 @@ function ensureRootRuntimeDirectory(path: string, parent: string): void {
  * it prevents deletion of our random root but does not prevent another user
  * from planting an ancestor opencode.json between validation and first prompt.
  */
-function resolveTrustedLaunchBase(explicit?: string): {
+/** #1845 层③ —— 与 anet 的 opencode-safe-root 同一套平台策略:linux 默认 /run/user/<uid>,darwin 默认
+ * realpath($TMPDIR)(每用户 0700 的 /private/var/folders/xx/<hash>/T),win32 拦;祖先/权限规则三平台一样。 */
+export const OPENCODE_LAUNCH_PLATFORMS: ReadonlySet<NodeJS.Platform> = new Set(["linux", "darwin"]);
+
+export function defaultOpencodeLaunchBase(uid: number, platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string {
+  if (platform === "darwin") {
+    const tmp = env.TMPDIR;
+    if (!tmp || !isAbsolute(tmp) || tmp.includes("\0")) {
+      throw new Error("opencode on macOS needs an absolute per-user TMPDIR, or set ANET_OPENCODE_SAFE_BASE");
+    }
+    return resolve(tmp);
+  }
+  if (!lstatIfPresent("/run/user")) ensureRootRuntimeDirectory("/run/user", "/run");
+  const requested = `/run/user/${uid}`;
+  if (!lstatIfPresent(requested)) ensureRootRuntimeDirectory(requested, "/run/user");
+  return requested;
+}
+
+export function resolveTrustedLaunchBase(
+  explicit?: string,
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): {
   path: string;
   dev: number | bigint;
   ino: number | bigint;
 } {
-  if (process.platform !== "linux" || process.getuid === undefined) {
-    throw new Error("opencode safe launch isolation currently requires Linux uid/procfs semantics");
+  if (!OPENCODE_LAUNCH_PLATFORMS.has(platform) || process.getuid === undefined) {
+    throw new Error(`opencode safe launch isolation currently requires Linux or macOS uid semantics (got ${platform})`);
   }
   const uid = process.getuid();
-  const configured = explicit ?? process.env.ANET_OPENCODE_SAFE_BASE;
+  const configured = explicit ?? env.ANET_OPENCODE_SAFE_BASE;
   let requested: string;
   if (configured !== undefined) {
     if (!isAbsolute(configured) || configured.includes("\0")) {
@@ -399,13 +422,13 @@ function resolveTrustedLaunchBase(explicit?: string): {
     }
     requested = resolve(configured);
   } else {
-    if (!lstatIfPresent("/run/user")) ensureRootRuntimeDirectory("/run/user", "/run");
-    requested = `/run/user/${uid}`;
-    if (!lstatIfPresent(requested)) ensureRootRuntimeDirectory(requested, "/run/user");
+    requested = defaultOpencodeLaunchBase(uid, platform, env);
   }
 
+  // darwin 的 $TMPDIR 是 /var/folders/…(/var → /private/var 符号链接):默认 base 允许请求路径经链接到达,
+  // canonical 之后每一级祖先仍逐级校验;显式 base 与 linux 保持「必须 canonical」。
   const canonical = realpathSync(requested);
-  if (canonical !== requested) {
+  if (canonical !== requested && !(platform === "darwin" && configured === undefined)) {
     throw new Error(`opencode refuses runtime base ${requested}: symlinks are not allowed`);
   }
 
@@ -654,7 +677,7 @@ function atomicWritePrivateFile(path: string, body: string, label: string): void
 
 export interface OpencodeExitedProcessIdentity {
   pid: number;
-  /** Linux /proc start-ticks identity; unavailable on Windows/macOS. */
+  /** Linux `/proc` start-ticks identity, or macOS `pid:<lstart epoch>` (#1845); unavailable on Windows. */
   identity: string | null;
   nativeExitObserved: true;
 }
@@ -688,8 +711,38 @@ function readLinuxProcessStat(pid: number): LinuxProcessStat | undefined {
   }
 }
 
+/** #1845 层③ —— macOS 没有 procfs:用 `ps -o lstart=,state= -p <pid>` 取启动时间(秒级)与状态。
+ * 同 uid 的进程都能读;启动时间作 PID 复用的区分度比 Linux 的 tick 粗,但同一秒内复用同一 PID 的概率可忽略。
+ * 纯解析函数单独导出以便在 Linux 上用真机样本测试。 */
+export function parseDarwinPsStat(output: string, pid: number): LinuxProcessStat | undefined {
+  const line = output.replace(/\r/g, "").split("\n").map(l => l.trim()).find(l => l.length > 0);
+  if (!line) return undefined;
+  // lstart 形如 "Mon Sep  7 17:38:47 2026",后面跟 state(如 "Ss" / "Z")。lstart 内部有多个空格,不能按空格切。
+  const match = /^([A-Za-z]{3}\s+[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(\S+)\s*$/.exec(line);
+  if (!match) return undefined;
+  const started = Date.parse(match[1]);
+  if (!Number.isFinite(started)) return undefined;
+  return { identity: `${pid}:${Math.floor(started / 1000)}`, state: match[2].charAt(0) };
+}
+
+function readDarwinProcessStat(pid: number): LinuxProcessStat | undefined {
+  try {
+    const out = execFileSync("/bin/ps", ["-o", "lstart=,state=", "-p", String(pid)], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000,
+    });
+    return parseDarwinPsStat(out, pid);
+  } catch {
+    return undefined;
+  }
+}
+
+function readProcessStat(pid: number): LinuxProcessStat | undefined {
+  if (process.platform === "darwin") return readDarwinProcessStat(pid);
+  return readLinuxProcessStat(pid);
+}
+
 export function readOpencodeProcessIdentity(pid: number): string | undefined {
-  return readLinuxProcessStat(pid)?.identity;
+  return readProcessStat(pid)?.identity;
 }
 
 function isPidAlive(pid: number): boolean {
@@ -727,11 +780,53 @@ function markerOwnerIsLive(marker: LaunchOwnerMarker): boolean {
  * permanently leak every credential-bearing launch tree. A positive exact
  * environment/cwd match still retains the root.
  */
+/** #1845 层③ —— macOS 不能读别的进程的环境(即使同 uid),改问「谁的 cwd / 打开文件在这棵树下」:
+ * `lsof -Fp +D <root>`(Mac mini 实测 0.25 s,树很小)。自己与刚被观测退出的那个 pid 不算。
+ * 纯解析函数单独导出以便测试。 */
+export function parseLsofPids(output: string): number[] {
+  const pids: number[] = [];
+  for (const raw of output.split("\n")) {
+    const line = raw.trim();
+    if (!/^p\d+$/.test(line)) continue;
+    const pid = Number(line.slice(1));
+    if (Number.isSafeInteger(pid) && pid > 0 && !pids.includes(pid)) pids.push(pid);
+  }
+  return pids;
+}
+
+function launchRootReferencedByLiveProcessDarwin(
+  launchRoot: string,
+  safeWorkspace: string | undefined,
+  exitedProcess?: OpencodeExitedProcessIdentity,
+): boolean | undefined {
+  const roots = [launchRoot, ...(safeWorkspace && !pathIsWithin(launchRoot, safeWorkspace) ? [safeWorkspace] : [])];
+  for (const root of roots) {
+    let out = "";
+    try {
+      out = execFileSync("/usr/sbin/lsof", ["-Fp", "+D", root], {
+        encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15_000,
+      });
+    } catch (error: any) {
+      // lsof exits 1 when nothing matches but still prints nothing; a spawn failure has no stdout either —
+      // distinguish by whether we got a Buffer back.
+      if (typeof error?.stdout === "string") out = error.stdout;
+      else return undefined;
+    }
+    for (const pid of parseLsofPids(out)) {
+      if (pid === process.pid) continue;
+      if (exitedProcess?.nativeExitObserved === true && exitedProcess.pid === pid) continue;
+      return true;
+    }
+  }
+  return false;
+}
+
 function launchRootReferencedByLiveProcess(
   launchRoot: string,
   safeWorkspace: string | undefined,
   exitedProcess?: OpencodeExitedProcessIdentity,
 ): boolean | undefined {
+  if (process.platform === "darwin") return launchRootReferencedByLiveProcessDarwin(launchRoot, safeWorkspace, exitedProcess);
   if (process.platform !== "linux") return undefined;
   let entries: string[];
   try {
