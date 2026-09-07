@@ -214,10 +214,15 @@ broken=$(printf '%s' "$out" | sed -nE 's/^broken_pins=([0-9]+)$/\1/p')
 #   顺带记一笔:按 `SCANNED_SUFFIXES` 在 docs+docs-site 下自己数是 392 → 394,
 #   与门的 131 → 133 **绝对值不同(门的扫描面更窄),但增量一致都是 +2**。
 #   能确认的是增量,不是绝对值 —— 绝对值以门的输出为准。
+# 2026-09-07:files 133 → 135。新增「桌面应用」指南(中英各一份):
+#     docs-site/docs/guide/desktop-app.md
+#     docs-site/docs/en/guide/desktop-app.md
+#   +2 = 两个 .md(同 08-31 那次的形状;上面「别按 .md 数推」的警告仍成立)。
+#   `uniq` 仍 9、`occ` 仍 24:CI(#1841 首轮)只报了 files 那一条(「预期扫 133 …,实际 135」)。
 #
 # 🔴 下面三条是 `-eq`(精确相等),**不是下界** —— job 名里的 "floor" 会误导。
 #    新增/删除文档都会让 files 变,必须回来按实际值更新,并写清变的是哪个数、为什么。
-[[ "$files" -eq 133 ]] || fail "预期扫 133 个文档文件(= git ls-files 的结果),实际 $files"
+[[ "$files" -eq 135 ]] || fail "预期扫 135 个文档文件(= git ls-files 的结果),实际 $files"
 [[ "$uniq"  -eq 9  ]] || fail "预期 9 个唯一 pin,实际 $uniq"
 [[ "$occ"   -eq 24 ]] || fail "预期 24 处原始出现,实际 $occ"
 echo "  OK  walk 路径与 git 路径给出同一份清单($files 文件 / $uniq 唯一 pin / $occ 处)"

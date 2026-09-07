@@ -74,6 +74,7 @@ export default withMermaid(defineConfig({
             items: [
               { text: '账号体系', link: '/guide/account-system' },
               { text: 'Dashboard', link: '/guide/dashboard' },
+              { text: '桌面应用', link: '/guide/desktop-app' },
               { text: '手机与桌面客户端', link: '/guide/app-shells' },
               { text: 'CLI 命令', link: '/guide/cli' },
               { text: 'Agent Node', link: '/guide/agent-node' },
@@ -180,6 +181,7 @@ export default withMermaid(defineConfig({
             items: [
               { text: 'Account System', link: '/en/guide/account-system' },
               { text: 'Dashboard', link: '/en/guide/dashboard' },
+              { text: 'Desktop App', link: '/en/guide/desktop-app' },
               { text: 'Mobile & desktop clients', link: '/en/guide/app-shells' },
               { text: 'CLI Commands', link: '/en/guide/cli' },
               { text: 'Agent Node', link: '/en/guide/agent-node' },
