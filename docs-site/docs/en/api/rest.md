@@ -1203,6 +1203,27 @@ Replaced with `<prefix>***redacted***` — **the prefix is kept** so the reader 
 
 ---
 
+### GET /api/node-create-requests
+
+> [View source ↗](https://github.com/sleep2agi/agent-network/blob/main/server/src/server.ts)
+
+Read the outcome of one `create_node` request — the `status` / `error` the daemon wrote back via `ack_create_request`. The desktop wizard uses it to show *why* a child node did not come up instead of only timing out on registration.
+
+```bash
+curl "http://localhost:9200/api/node-create-requests?request_id=cr_59723b24-…" \
+  -H "Authorization: Bearer utok_xxx"
+```
+
+**Response**: `{"ok":true,"request":{"request_id","daemon_node_id","child_name","network_id","runtime","model","status","error","created_at","delivered_at","acked_at"}}`. `status` ∈ `pending` / `delivered` / `started` / `failed` / `rejected` / `runtime_capability_check_failed`; `error` is the daemon's text verbatim (≤ 1000 chars) or `null`.
+
+| Status | Response | When |
+|---|---|---|
+| 401 | `{"ok":false,"error":"auth_required"}` | no user context |
+| 400 | `{"ok":false,"error":"request_id_required"}` | `request_id` missing |
+| 404 | `{"ok":false,"error":"request_not_found"}` | nonexistent **or outside your network scope** (same shape, so other networks' ids are not probeable) |
+
+---
+
 ### POST /api/messages/ack
 
 > [View source ↗](https://github.com/sleep2agi/agent-network/blob/main/server/src/server.ts) · since `0.9.0-preview.41`

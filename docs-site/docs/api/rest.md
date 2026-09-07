@@ -1252,6 +1252,27 @@ curl "http://localhost:9200/api/messages?scope=user&unacked=1&limit=50" \
 
 ---
 
+### GET /api/node-create-requests
+
+> [源码 ↗](https://github.com/sleep2agi/agent-network/blob/main/server/src/server.ts)
+
+读一条 `create_node` 请求的结果 —— daemon 通过 `ack_create_request` 写回的 `status` / `error`。桌面向导用它把「子节点起不来」的原因显示出来,而不是只等注册超时。
+
+```bash
+curl "http://localhost:9200/api/node-create-requests?request_id=cr_59723b24-…" \
+  -H "Authorization: Bearer utok_xxx"
+```
+
+**响应**:`{"ok":true,"request":{"request_id","daemon_node_id","child_name","network_id","runtime","model","status","error","created_at","delivered_at","acked_at"}}`。`status` ∈ `pending` / `delivered` / `started` / `failed` / `rejected` / `runtime_capability_check_failed`;`error` 是 daemon 回的原文(最长 1000 字),没有则 `null`。
+
+| 状态 | 响应 | 何时 |
+|---|---|---|
+| 401 | `{"ok":false,"error":"auth_required"}` | 没有用户上下文 |
+| 400 | `{"ok":false,"error":"request_id_required"}` | 缺 `request_id` |
+| 404 | `{"ok":false,"error":"request_not_found"}` | 不存在,**或不在你的网络作用域内**(两者同形,不泄漏别的网络有没有这个 id) |
+
+---
+
 ### POST /api/messages/ack
 
 > [源码 ↗](https://github.com/sleep2agi/agent-network/blob/main/server/src/server.ts) · 自 `0.9.0-preview.41` 起
