@@ -232,12 +232,22 @@ export function validateOpencodePackageBinary(
 
 /** Resolve the first *valid package-owned* OpenCode entry on PATH. Invalid
  * project-local shims are skipped so a later trusted global install can win. */
+/** #1845 层① —— 包身份校验只依赖 POSIX 的 lstat/uid/mode 语义,darwin 与 linux 等价
+ * (2026-09-07 Mac mini 真跑:home 前缀 npm 安装 → VALIDATE_OK;/tmp 下祖先 1777 仍被拒)。
+ * win32 没有 uid、也没有 0o111 可执行位,继续拦。平台可注入,便于在 Linux CI 上测三种分支。 */
+export const OPENCODE_VERIFIER_PLATFORMS: ReadonlySet<NodeJS.Platform> = new Set(["linux", "darwin"]);
+
+export function opencodeVerifierSupportsPlatform(platform: NodeJS.Platform = process.platform): boolean {
+  return OPENCODE_VERIFIER_PLATFORMS.has(platform);
+}
+
 export function resolveOpencodePackageBinaryFromPath(
   searchPath: string,
   options: ValidateOpencodePackageBinaryOptions,
+  platform: NodeJS.Platform = process.platform,
 ): string {
-  if (process.platform !== "linux") {
-    throw new Error("opencode-cli package entrypoint verification currently requires Linux");
+  if (!opencodeVerifierSupportsPlatform(platform)) {
+    throw new Error(`opencode-cli package entrypoint verification currently requires Linux or macOS (got ${platform})`);
   }
   const rejected: string[] = [];
   for (const rawDir of searchPath.split(delimiter)) {

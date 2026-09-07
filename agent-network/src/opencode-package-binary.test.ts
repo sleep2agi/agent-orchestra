@@ -11,6 +11,7 @@ import {
 import { join } from "path";
 import {
   discoverOpencodeForbiddenRoots,
+  opencodeVerifierSupportsPlatform,
   resolveOpencodePackageBinaryFromPath,
   validateOpencodePackageBinary,
 } from "./opencode-package-binary";
@@ -253,5 +254,23 @@ describe("#739 cwd 参与信任判定", () => {
       expectedVersion: "1.18.1",
       forbiddenRoots: [project],
     })).toThrow("project/node-local");
+  });
+});
+
+// #1845 层① —— 平台门:linux / darwin 放行,win32 仍拦。用注入的 platform 在 Linux CI 上测三种分支;
+// 平台门在扫 PATH 之前,所以 win32 的拒绝与 PATH 内容无关(空 PATH 也拒的是平台,不是「没找到」)。
+describe("#1845 platform gate", () => {
+  test("linux and darwin are accepted, win32 is not", () => {
+    expect(opencodeVerifierSupportsPlatform("linux")).toBe(true);
+    expect(opencodeVerifierSupportsPlatform("darwin")).toBe(true);
+    expect(opencodeVerifierSupportsPlatform("win32")).toBe(false);
+  });
+  test("win32 is refused before PATH is scanned, naming the platform", () => {
+    expect(() => resolveOpencodePackageBinaryFromPath("", { expectedVersion: "1.18.1" }, "win32"))
+      .toThrow(/requires Linux or macOS \(got win32\)/);
+  });
+  test("darwin reaches the PATH scan (empty PATH → not-found, not a platform error)", () => {
+    expect(() => resolveOpencodePackageBinaryFromPath("", { expectedVersion: "1.18.1" }, "darwin"))
+      .toThrow(/no trusted exact opencode-ai package entrypoint found on PATH/);
   });
 });
